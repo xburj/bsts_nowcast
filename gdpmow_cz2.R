@@ -12,10 +12,9 @@ options(prompt = "R> ")
 
 
 
-source("Eurostat_functions.R")
-source("other_functions.R")
-source("funkce_rady.R")
+
 library("xts")
+library("plotly")
 require("dplyr")
 require("reshape2")
 require("forecast")
@@ -95,12 +94,15 @@ en.time <- 2017
 logdif <- c("indu_emu",   "manu_emu",   "coreretail_emu",    "retail_de",  "retail_fr",  "retail_it",  "manu_de",    "manu_fr",    "manu_it",    "const_emu",  "retail_emu", "trade_emu","unem_emu","hourwork_de")
 depend  <- "gdp_emu"
 regresor <- c("indu_emu",   "manu_emu",   "coreretail_emu", "const_emu",  "retail_emu", "trade_emu","unem_emu","hourwork_de", "ifo_de","pastprod_indu", "confidence_indu","employ_indu", "demand_serv")
-aaa <- "2022-12-01" # the last period to be forecasted from
-bbb <- "2023-01-01" # period to be forecasted (vzdy beyprostredne po)
+aaa <- "2023-01-01" # the last period to be forecasted from
+bbb <- "2023-03-01" # period to be forecasted (vzdy beyprostredne po)
 regresor_f  <- c("manu_emu","retail_emu", "const_emu") # final selection of the regressoprs for the model
 st.date_graph  <- c(2012,1)
 l <- 0.01 #jake promenne pustit do modelu
-
+quater_name <- "Q2 2023"
+graph_range <- c(-3,6)
+st.date_graph  <- c(2012,1)
+l <- 0.01 #jake promenne pustit do modelu
 #------------------------------------------------------------------------------------------------------------------------------------------------------#
 
 # Download data-----
@@ -341,22 +343,19 @@ l <- 0.01 #jake promenne pustit do modelu
 #dataset <- merge.xts(gdp_select,retail_xts,const_xts,int_trade_xts,unem_xts,dt_X)
 #dataset <- merge.xts(gdp_select,unem_xts,dt_X)
 dataset <- merge.xts(gdp_select,manu_xts,retail_xts,service_xts,const_xts,unem_xts,dt_X) # pridat int_trade_xts az budou data aktual
+saveRDS(dataset,"dataset.rds") 
+
+#-----------------------------------------------------------------------------------#
+#Initial transformation of data#-------
+#-----------------------------------------------------------------------------------#
+dataset <- readRDS("dataset.rds")
 pokus <- dataset[paste0("/",aaa),]# data do posledniho data pro odhad modelu
 pokus<- rbind(pokus,xts(matrix(colMeans(dataset[paste0(bbb,"/",(as.Date(bbb) %m+% months(2))),],na.rm = T),nrow = 1),order.by = as.Date(bbb))) # zprumerovani vsech dat nad posledni datum pro odhad modelu
 dataset <- pokus
 
+dataset.ts <- xts2ts(dataset)
+dataset <- dataset["2004-06-01/",]
 
-saveRDS(dataset,"dataset.rds") 
-#-----------------------------------------------------------------------------------#
-#Initial transformation of data#-------
-#-----------------------------------------------------------------------------------#
-{
-  
-  
-  dataset.ts <- xts2ts(dataset)
-  dataset <- dataset["2004-06-01/",]
-  
-}
 
 #-----------------------------------------------------------------------------------#
 #Data for model#
@@ -464,87 +463,122 @@ plot(mod.final, "coefficients", burn = burn)
 
 
 #-----------------------------------------------------------------------------------#
-# Predictions +  estimate graph----------
+# Predictions ----------
 #-----------------------------------------------------------------------------------#
 
 output <- predict.bsts(object = mod.final,newdata =matrix(x1,nrow = 1),burn = burn) #prediction
 
+# Prediction developmentss-------
+#Downloading initial values in the database
+seriesupdate <- FetchOneTimeSeries("ih:mb:priv:cz_bsts_nowcast")
+seriesupdate
 
-#Save the nowcast sumarry
-#nowcast_sumary <- matrix(ncol=3,nrow=)
-#colnames(nowcast_sumary) <- c("EMU","DE","CZ")
-#saveRDS(object = nowcast_sumary,file = "P:/Transfer/Dealing/AFT/HONZABURES/nowcast_sumary.rds")
-nowcast_sumary <- readRDS("P:/Transfer/Dealing/AFT/HONZABURES/nowcast_sumary.rds")
-nowcast_sumary[,3] <- as.numeric(output$median)
-attr(nowcast_sumary,"date") <- Sys.Date()
-saveRDS(object = nowcast_sumary,file = "P:/Transfer/Dealing/AFT/HONZABURES/nowcast_sumary.rds")
 
-#Save the nowcast developmentn
-# develop_cz <- xts(x = matrix(c(as.numeric(output$interval[1,]),as.numeric(output$median),as.numeric(output$interval[2,])),nrow = 1),order.by = now())
-#saveRDS(object = develop_cz,file = "develop_cz.rds")
+#Updating the values with the new forecast - conditional on the day of the quarter
+original_data <- as.numeric(as.xts(seriesupdate))
+original_dates <- index(as.xts(seriesupdate))
+current_quarter <- floor_date(as.Date(now()),unit = "quarter")
 
-develop_cz <- readRDS(file = "develop_cz.rds")
-develop_cz <- rbind(develop_cz,xts(x = matrix(c(as.numeric(output$interval[1,]),as.numeric(output$median),as.numeric(output$interval[2,])),nrow = 1),order.by = now()))
-colnames(develop_cz) <- c("2.5%","Median","97.5%")
-saveRDS(object = develop_cz,file = "develop_cz.rds")
+if(last(original_dates)>current_quarter){
+  values_temp <- c(original_data,rep(x = output$median-0.1,as.numeric(as.Date(now())-last(original_dates))))
+  start_date_temp <- first(original_dates)
+}
 
-#Plot of Development
+if(last(original_dates)<current_quarter){
+  to_end_quarter<- rep(x = last(original_data),(current_quarter)-last(original_dates))
+  values_temp <- c(original_data,to_end_quarter,rep(x = output$median,as.numeric(as.Date(now())-current_quarter)))
+  start_date_temp <- first(original_dates)
+}
 
-png(filename = "u:/Dokumenty/Rdata/GDPnow_emu/czdevelopment.png", width = 600, height = 750)
-op <- par
-col2rgb(CSOB_colors(2))
-mycol <- rgb(0, 51, 102, max = 255, alpha = 30, names = "blue50")
-par(cex=1.4)
-plot(x = index(develop_cz),y = develop_cz$Median, type = "b",pch=16,bty="n",col=CSOB_colors(1),ylim=c(-0.9,0.9),ylab = "qoqa %",xlab = "", main = "" )
-polygon(x = c(index(develop_cz),index(develop_cz)[length(index(develop_cz)):1]),
-        y = c(as.numeric(develop_cz$`2.5%`),as.numeric(develop_cz$`97.5%`)[length(index(develop_cz)):1]),col =mycol, border = NA )
-text(x = index(develop_cz),y =(develop_cz$Median-0.1),labels = round(as.numeric(develop_cz$Median),digits = 2))
-abline(h = 0,col="red",lty=2)
-par(op)
-dev.off()
 
-#plot of comparison with past
-temp_date <- "2010-01-01/"
-plot(y = as.numeric(dataset[temp_date,"gdp_emu"]),x = index(dataset[temp_date,]),bty="null",ylab = "Mezikvartalni rust HDP CZ",xlab = "")
-abline(h = as.numeric(output$median),col="grey40",lty=2)
-text(paste("Odhad mezikvartalniho rustu 2019 Q3:",round(output$median,digits = 2),"%"),y =output$median-0.5,x = index(dataset)[62],col ="grey40",adj = 1)
-points(x = last(index(dataset)),y =output$median,pch=19)
-points(x = last(index(dataset)),y =output$median,pch=2)
+seriesNew <- CreateTimeSeriesObject("ih:mb:priv:cz_bsts_nowcast", description = "BSTS nowcast Czechia",category = "CZ_nowcasts", region = "cz",  frequency = "Daily", values = values_temp, startDateOrDates = start_date_temp,dayMask = "FullWeek" )
+
+UploadOneOrMoreTimeSeries(seriesNew)
+
+## Basic outcome plot----------
 #Probability above threshold
 
 prob <- ecdf(output$distribution)(0) * 100 # funkce ecdf vrati funkci kumulativni distribuce, ktera nasledne vyhodi vysledek pro zadanou hodnotu ....0 znamena mensi pravdepodobnost, ze hodnota bude mensi nebo rovna 0  
 
-op <- par
-par(cex=1.4)
-hist(output$distribution,xlab = "", ylab="Hustota pravdepodobnosti",freq = 0,main = "Nowcast odhad HDP v CZ 4Q 2022",col = "grey90",border = "white")
-text(paste("Odhad mezikvartalniho rustu(median):",round(output$median,digits = 1),"%"),x =output$median+2,y = 0.1,col ="grey40",adj = 1,cex = 0.7)
-text(paste("Pravdepodobnost poklesu HDP:",round((prob),digits = 1),"%"),x =output$median+2,y = 0.06,col ="grey40",adj = 1,cex = 0.7 )
-#text(paste("Odhad CNB:","-9,4%"),x =output$median-2,y = 0.05,col ="grey40",adj = 1,cex = 0.7 )
-abline(v=0,col="grey25",lty=2 )
-mtext(text = "Zdroj: CSOB/Patria", side = 1, line = 2, adj = 1, font = 2)
-par(op)
+prob <- ecdf(output$distribution)(0) * 100 # funkce ecdf vrati funkci kumulativni distribuce, ktera nasledne vyhodi vysledek pro zadanou hodnotu ....0 znamena mensi pravdepodobnost, ze hodnota bude mensi nebo rovna 0  
 
-#twitter size
-op <- par
-par(cex=1.4)
-hist(output$distribution,xlab = "", ylab="Hustota pravdepodobnosti",freq = 0,main = "Nowcast odhad HDP v CZ 2Q 2020",col = "grey90",border = "white",cex.main=0.7,cex.axis=0.7)
-text(paste("Odhad rustu(median,qoq):",round(output$median,digits = 1),"%"),x =output$median-3,y = 0.07,col ="grey40",adj = 1,cex = 0.6)
-text(paste("Pravdepodobnost poklesu HDP:",round((prob),digits = 1),"%"),x =output$median-3,y = 0.05,col ="grey40",adj = 1,cex = 0.6 )
-text(paste("Odhad CNB:","-9,4%"),x =output$median-3,y = 0.03,col ="grey40",adj = 1,cex = 0.6 )
-abline(v=0,col="grey25",lty=2 )
-mtext(text = "Zdroj: CSOB/Patria", side = 1, line = 2, adj = 1, font = 2,cex = 0.5)
-par(op)
 
-png(filename = "u:/Dokumenty/Rdata/GDPnow_emu/cznowcast.png", width = 600, height = 750)
-op <- par
-par(cex=1.4)
-hist(output$distribution,xlab = "", ylab="Probability",freq = 0,main = "Nowcast Estimate GDP,CZ 2022Q1",col = "grey90",border = "white")
-text(paste("GDP growth estimate(q/q,median):",round(output$median,digits = 2),"%"),x =output$median+5,y = 0.10,col ="grey40",adj = 1)
-text(paste("Probability of GDP decline:",round((prob),digits = 1),"%"),x =output$median+5,y = 0.05,col ="grey40",adj = 1 )
-abline(v=0,col="grey25",lty=2 )
-mtext(text = "Source: CSOB/KBC", side = 1, line = 2, adj = 1, font = 2)
-par(op)
-dev.off()
+
+
+f <- list(
+  family = "Arial",
+  size = 15,
+  color = "#7f7f7f"
+)
+x <- list(
+  title = "hustota pravdepodobnosti",
+  titlefont = f,
+  showgrid=F
+)
+y <- list(
+  title = "mezikvartalni zmena HDP",
+  titlefont = f,range=graph_range,zeroline=1,showgrid=T,zerolinewidth=1.1,
+  tickfont=list()
+)
+m <- list(
+  l = 50,
+  r = 50,
+  b = 60,
+  t = 60,
+  pad = 4
+)
+anotations <- list(text=c(paste("Mediánový odhad",round(output$median,digits = 2),"%"),paste("Pravdepodobnost poklesu HDP:",round((prob),digits = 1),"%")),
+                   x=c(0.02,0.02),y=c(mean(graph_range),(mean(graph_range)-0.5)),
+                   showarrow=FALSE)
+fig <- plot_ly(y = ~as.numeric(output$distribution),
+               type = "histogram",
+               histnorm = "probability")
+fig <- fig %>% layout(xaxis = x, yaxis = y, title=paste0("Nowcast HDP CZ",quater_name),annotations=anotations,
+                      margin=m)
+
+fig
+
+
+#PLot of probability above threshold en
+
+prob <- ecdf(output$distribution)(0) * 100 # funkce ecdf vrati funkci kumulativni distribuce, ktera nasledne vyhodi vysledek pro zadanou hodnotu ....0 znamena mensi pravdepodobnost, ze hodnota bude mensi nebo rovna 0  
+
+
+
+
+f <- list(
+  family = "Arial",
+  size = 15,
+  color = "#7f7f7f"
+)
+x <- list(
+  title = "hprobability density",
+  titlefont = f,
+  showgrid=F
+)
+y <- list(
+  title = "qoq change in GDP",
+  titlefont = f,range=graph_range,zeroline=1,showgrid=T,zerolinewidth=1.1,
+  tickfont=list()
+)
+m <- list(
+  l = 50,
+  r = 50,
+  b = 60,
+  t = 60,
+  pad = 4
+)
+anotations <- list(text=c(paste("Median estimate",round(output$median,digits = 2),"%"),paste("Probability of GDP decline:",round((prob),digits = 1),"%")),
+                   x=c(0.02,0.02),y=c(mean(graph_range)+1.5,(mean(graph_range)+1)),
+                   showarrow=FALSE)
+fig <- plot_ly(y = ~as.numeric(output$distribution),
+               type = "histogram",
+               histnorm = "probability")
+fig <- fig %>% layout(xaxis = x, yaxis = y, title=paste0("Nowcast GDP CZ, ",quater_name),annotations=anotations,
+                      margin=m)
+
+fig
+
 
 #-----------------------------------------------------------------------------------#
 # Compare inclusion of important variables--------------
